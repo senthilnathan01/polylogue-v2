@@ -13,6 +13,13 @@ type SupadataTranscriptResponse = {
   availableLangs?: string[];
 };
 
+const DEFAULT_MIN_INTERVAL_MS = 1500;
+const DEFAULT_RETRY_COUNT = 4;
+const DEFAULT_BACKOFF_MS = 2500;
+
+let nextAvailableRequestAt = 0;
+let requestQueue: Promise<void> = Promise.resolve();
+
 function getSupadataApiKey(): string {
   const apiKey = process.env.SUPADATA_API_KEY;
 
@@ -21,6 +28,62 @@ function getSupadataApiKey(): string {
   }
 
   return apiKey;
+}
+
+function getMinIntervalMs(): number {
+  const value = Number(process.env.SUPADATA_MIN_INTERVAL_MS ?? DEFAULT_MIN_INTERVAL_MS);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_MIN_INTERVAL_MS;
+}
+
+function getRetryCount(): number {
+  const value = Number(process.env.SUPADATA_RETRY_COUNT ?? DEFAULT_RETRY_COUNT);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_RETRY_COUNT;
+}
+
+function getRetryBaseDelayMs(): number {
+  const value = Number(process.env.SUPADATA_RETRY_BASE_DELAY_MS ?? DEFAULT_BACKOFF_MS);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_BACKOFF_MS;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function scheduleSupadataRequest(): Promise<void> {
+  const minIntervalMs = getMinIntervalMs();
+
+  const scheduled = requestQueue.then(async () => {
+    const waitMs = Math.max(0, nextAvailableRequestAt - Date.now());
+
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+
+    nextAvailableRequestAt = Date.now() + minIntervalMs;
+  });
+
+  requestQueue = scheduled.catch(() => undefined);
+  await scheduled;
+}
+
+function parseRetryAfterMs(response: Response): number | null {
+  const retryAfter = response.headers.get('retry-after');
+
+  if (!retryAfter) {
+    return null;
+  }
+
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+
+  const retryAt = Date.parse(retryAfter);
+  if (!Number.isNaN(retryAt)) {
+    return Math.max(0, retryAt - Date.now());
+  }
+
+  return null;
 }
 
 async function fetchSupadataTranscript(
@@ -39,20 +102,36 @@ async function fetchSupadataTranscript(
 
   url.searchParams.set('lang', 'en');
 
-  const response = await fetch(url.toString(), {
-    headers: {
-      Accept: 'application/json',
-      'x-api-key': getSupadataApiKey(),
-    },
-    cache: 'no-store',
-  });
+  const maxRetries = getRetryCount();
 
-  if (!response.ok) {
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    await scheduleSupadataRequest();
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Accept: 'application/json',
+        'x-api-key': getSupadataApiKey(),
+      },
+      cache: 'no-store',
+    });
+
+    if (response.ok) {
+      return (await response.json()) as SupadataTranscriptResponse;
+    }
+
     const body = await response.text();
+
+    if (response.status === 429 && attempt < maxRetries) {
+      const retryDelayMs =
+        parseRetryAfterMs(response) ?? getRetryBaseDelayMs() * Math.max(1, attempt + 1);
+      await sleep(retryDelayMs);
+      continue;
+    }
+
     throw new Error(`Supadata transcript request failed with ${response.status}: ${body}`);
   }
 
-  return (await response.json()) as SupadataTranscriptResponse;
+  throw new Error('Supadata transcript request exhausted retries.');
 }
 
 export class SupadataTranscriptProvider implements TranscriptProvider {
