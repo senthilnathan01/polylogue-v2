@@ -43,8 +43,8 @@ export default function Home() {
                   desc="Each major topic gets its own transcript-backed support video instead of generic search results."
                 />
                 <FeatureCard
-                  title="PDF-ready output"
-                  desc="Saved reports are printable with a clean layout, so they can be exported as PDFs directly."
+                  title="Vault-ready exports"
+                  desc="Saved runs now expose traceability, research-pack lineage, and Obsidian-ready vault downloads alongside printable reports."
                 />
               </div>
             </section>
