@@ -20,8 +20,10 @@ export type GenerationStage =
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 export type ArtifactKind =
+  | 'primary_video_metadata'
   | 'transcript'
   | 'primary_transcript'
+  | 'supporting_video_selection'
   | 'supporting_transcript'
   | 'topic_map'
   | 'source_selection'
@@ -29,6 +31,16 @@ export type ArtifactKind =
   | 'critic_notes'
   | 'report_markdown'
   | 'export_bundle';
+
+export type PipelineStageKey =
+  | 'ingest_primary_video'
+  | 'fetch_primary_transcript'
+  | 'extract_topics'
+  | 'search_supporting_videos'
+  | 'fetch_supporting_transcripts'
+  | 'build_research_pack'
+  | 'render_report'
+  | 'build_exports';
 
 export type PromptKey =
   | 'extractor'
@@ -112,6 +124,15 @@ export interface SourceAgentOutput {
   topic_research: TopicResearch[];
 }
 
+export interface SupportingVideoSelection {
+  topic: Topic;
+  source: VideoSource | null;
+}
+
+export interface SupportingVideoSelectionOutput {
+  selections: SupportingVideoSelection[];
+}
+
 export interface SynthesisSection {
   heading: string;
   topic_name: string;
@@ -167,6 +188,8 @@ export interface ArtifactRecord<T = unknown> {
   research_pack_id?: string;
   prompt_version?: PromptVersionReference;
   cache_key?: string;
+  metadata?: ArtifactMetadata;
+  provenance?: ArtifactProvenance;
   content: T | null;
   storage_backend?: 'inline' | 'supabase_storage';
   storage_bucket?: string;
@@ -175,6 +198,28 @@ export interface ArtifactRecord<T = unknown> {
   byte_size?: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface ArtifactMetadata {
+  canonical_video_id?: string;
+  video_id?: string;
+  content_hash?: string;
+  transcript_hash?: string;
+  transcript_word_count?: number;
+  topic_names?: string[];
+  supporting_video_ids?: string[];
+  report_length?: LengthType;
+  source_count?: number;
+}
+
+export interface ArtifactProvenance {
+  stage: PipelineStageKey;
+  input_signature: string;
+  upstream_artifact_ids: string[];
+  transcript_provider?: string;
+  video_provider?: string;
+  llm_model?: string;
+  freshness_window_hours?: number;
 }
 
 export interface ResearchPack {

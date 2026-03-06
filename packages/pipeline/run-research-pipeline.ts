@@ -1,68 +1,29 @@
 import {
-  ArtifactRecord,
   createEntityId,
   Job,
   PipelineContext,
-  PrimaryVideo,
-  Report,
-  ResearchPack,
-  SourceAgentOutput,
   StreamEvent,
-  SynthesizerOutput,
 } from '@/packages/core';
 import { RepositoryBundle } from '@/packages/core/repositories';
-import { TranscriptProvider, VideoProvider, LLMProvider } from '@/packages/core/providers';
-import { getTranscriptArtifactCacheKey } from '@/lib/providers/cached-transcript-provider';
+import { LLMProvider, TranscriptProvider, VideoProvider } from '@/packages/core/providers';
 
-import { CriticAgent } from './agents/critic-agent';
-import { ExtractorAgent } from './agents/extractor-agent';
-import { SourceAgent } from './agents/source-agent';
-import { SynthesizerAgent } from './agents/synthesizer-agent';
 import { WriterAgent } from './agents/writer-agent';
+import {
+  buildExportsStage,
+  buildResearchPackStage,
+  extractTopicsStage,
+  fetchPrimaryTranscriptStage,
+  fetchSupportingTranscriptsStage,
+  ingestPrimaryVideoStage,
+  renderReportStage,
+  searchSupportingVideosStage,
+} from './stages';
 
 export interface ResearchPipelineDependencies {
   llm: LLMProvider;
   transcriptProvider: TranscriptProvider;
   videoProvider: VideoProvider;
   repositories: RepositoryBundle;
-}
-
-async function buildPrimaryVideo(
-  youtubeUrl: string,
-  videoProvider: VideoProvider,
-  transcriptProvider: TranscriptProvider,
-): Promise<PrimaryVideo | null> {
-  const videoId = videoProvider.extractVideoId(youtubeUrl);
-
-  if (!videoId) {
-    return null;
-  }
-
-  const [details, transcriptSegments] = await Promise.all([
-    videoProvider.getVideoDetails(videoId),
-    transcriptProvider.getTranscriptSegments(videoId),
-  ]);
-
-  if (!details || !transcriptSegments || transcriptSegments.length === 0) {
-    return null;
-  }
-
-  const transcript = transcriptSegments.map((segment) => segment.text).join(' ');
-  const durationFromTranscript = transcriptSegments[transcriptSegments.length - 1]?.end ?? 0;
-
-  return {
-    video_id: details.video_id,
-    title: details.title,
-    url: details.url,
-    channel: details.channel,
-    view_count: details.view_count,
-    published_at: details.published_at,
-    duration_sec: details.duration_sec && details.duration_sec > 0 ? details.duration_sec : durationFromTranscript,
-    description: details.description,
-    transcript,
-    transcript_segments: transcriptSegments,
-    transcript_word_count: transcript.split(/\s+/).filter(Boolean).length,
-  };
 }
 
 function createInitialContext(input: {
@@ -90,16 +51,11 @@ export async function* runResearchJob(
   job: Job,
   deps: ResearchPipelineDependencies,
 ): AsyncGenerator<StreamEvent> {
-  const extractor = new ExtractorAgent(deps.llm);
-  const sourceAgent = new SourceAgent(deps.llm, deps.videoProvider, deps.transcriptProvider);
-  const synthesizer = new SynthesizerAgent(deps.llm);
-  const critic = new CriticAgent(deps.llm);
-  const writer = new WriterAgent(deps.llm);
-
   const context = createInitialContext({
     job,
   });
   let currentJob = job;
+  let researchPackCreatedAt: string | undefined;
   const existingEvents = await deps.repositories.jobEvents.listByJobId(job.id);
   let eventSequence = existingEvents[existingEvents.length - 1]?.sequence ?? 0;
 
@@ -116,46 +72,16 @@ export async function* runResearchJob(
     return event;
   };
 
-  const saveArtifact = async <T,>(
-    kind: ArtifactRecord<T>['kind'],
-    content: T,
-    promptKey?: ArtifactRecord<T>['prompt_version'],
-  ): Promise<string> => {
-    const artifact = await deps.repositories.artifacts.save<T>({
-      id: createEntityId('artifact'),
-      kind,
-      job_id: context.job_id,
-      research_pack_id: context.research_pack_id,
-      prompt_version: promptKey,
-      cache_key: `${kind}:${context.idempotency_key}`,
-      content,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    });
-
-    return artifact.id;
-  };
-
   try {
     yield await emit({ stage: 'validating_input', text: 'Validating the YouTube link...' });
 
-    yield await emit({
-      stage: 'transcript_fetched',
-      text: 'Fetching the main video transcript...',
-    });
-
-    const primaryVideo = await buildPrimaryVideo(
-      currentJob.youtube_url,
-      deps.videoProvider,
-      deps.transcriptProvider,
-    );
-
-    if (!primaryVideo) {
+    const metadataArtifact = await ingestPrimaryVideoStage(context, deps);
+    if (!metadataArtifact?.content) {
       currentJob = await deps.repositories.jobs.update({
         ...currentJob,
         status: 'failed',
         error_message:
-          'Could not fetch a transcript for that YouTube video. Try another URL with available captions.',
+          'Could not resolve metadata for that YouTube video. Try another URL with an available video record.',
         finished_at: new Date().toISOString(),
       });
 
@@ -166,21 +92,17 @@ export async function* runResearchJob(
       return;
     }
 
-    context.artifacts.primary_transcript_artifact_id =
-      (
-        await deps.repositories.artifacts.findLatestByCacheKey(
-          getTranscriptArtifactCacheKey(primaryVideo.video_id),
-        )
-      )?.id ??
-      (await saveArtifact(
-        'transcript',
-        {
-          video_id: primaryVideo.video_id,
-          transcript: primaryVideo.transcript,
-          transcript_segments: primaryVideo.transcript_segments,
-          transcript_word_count: primaryVideo.transcript_word_count,
-        },
-      ));
+    yield await emit({
+      stage: 'transcript_fetched',
+      text: 'Fetching the main video transcript...',
+    });
+
+    const { primaryVideo, transcriptArtifact } = await fetchPrimaryTranscriptStage(
+      context,
+      deps,
+      metadataArtifact,
+    );
+    context.artifacts.primary_transcript_artifact_id = transcriptArtifact.id;
 
     yield await emit({
       stage: 'transcript_fetched',
@@ -196,158 +118,89 @@ export async function* runResearchJob(
       stage: 'extracting_topics',
       text: 'Mapping the main themes from the primary video...',
     });
-    const extractorOutput = await extractor.run(primaryVideo);
-    context.artifacts.topic_map_artifact_id = await saveArtifact(
-      'topic_map',
-      extractorOutput,
-      context.prompt_versions.find((item) => item.key === 'extractor'),
-    );
+    const topicMapArtifact = await extractTopicsStage(context, deps, primaryVideo, transcriptArtifact);
+    context.artifacts.topic_map_artifact_id = topicMapArtifact.id;
 
     yield await emit({
       stage: 'topics_found',
       data: {
-        topics: extractorOutput.top_topics,
-        summary: extractorOutput.overall_summary,
+        topics: topicMapArtifact.content.top_topics,
+        summary: topicMapArtifact.content.overall_summary,
       },
     });
 
     yield await emit({
       stage: 'fetching_sources',
-      text: 'Finding one strong transcript-backed support video for each topic...',
+      text: 'Finding and caching transcript-backed support videos for each topic...',
     });
-    const sourceOutput = await sourceAgent.run(primaryVideo, extractorOutput.top_topics);
-    context.artifacts.source_selection_artifact_id = await saveArtifact<SourceAgentOutput>(
-      'source_selection',
-      sourceOutput,
-      context.prompt_versions.find((item) => item.key === 'source_analysis'),
+    const supportingVideoSelectionArtifact = await searchSupportingVideosStage(
+      context,
+      deps,
+      primaryVideo,
+      topicMapArtifact,
+    );
+    const supportingTranscriptArtifacts = await fetchSupportingTranscriptsStage(
+      context,
+      deps,
+      supportingVideoSelectionArtifact,
+    );
+    context.artifacts.supporting_transcript_artifact_ids = supportingTranscriptArtifacts.map(
+      (artifact) => artifact.id,
     );
 
-    context.artifacts.supporting_transcript_artifact_ids = await persistSupportingTranscripts({
-      sourceOutput,
+    const { researchPack, sourceSelectionArtifact } = await buildResearchPackStage(
       context,
-      repositories: deps.repositories,
-    });
+      deps,
+      primaryVideo,
+      topicMapArtifact,
+      supportingVideoSelectionArtifact,
+      supportingTranscriptArtifacts,
+    );
+    researchPackCreatedAt = researchPack.created_at;
+    context.artifacts.source_selection_artifact_id = sourceSelectionArtifact.id;
 
     yield await emit({
       stage: 'sources_found',
       data: {
-        sources: sourceOutput.sources,
-        topic_research: sourceOutput.topic_research,
+        sources: sourceSelectionArtifact.content.sources,
+        topic_research: sourceSelectionArtifact.content.topic_research,
       },
     });
 
-    yield await emit({ stage: 'synthesizing', text: 'Building the long-form report plan...' });
-    const synthesizerOutput = await synthesizer.run(
-      primaryVideo,
-      extractorOutput,
-      sourceOutput.topic_research,
-      currentJob.length_type,
-    );
-    context.artifacts.synthesis_artifact_id = await saveArtifact<SynthesizerOutput>(
-      'synthesis_plan',
-      synthesizerOutput,
-      context.prompt_versions.find((item) => item.key === 'synthesizer'),
-    );
-
+    yield await emit({ stage: 'synthesizing', text: 'Building the report plan from the research pack...' });
     yield await emit({
       stage: 'critiquing',
-      text: 'Checking the plan for missing nuance and weak sections...',
+      text: 'Checking the report plan for missing nuance before writing...',
     });
-    const criticOutput = await critic.run(
-      primaryVideo,
-      sourceOutput.topic_research,
-      synthesizerOutput,
-    );
-    context.artifacts.critic_artifact_id = await saveArtifact(
-      'critic_notes',
-      criticOutput,
-      context.prompt_versions.find((item) => item.key === 'critic'),
-    );
-
     yield await emit({ stage: 'generating_report', text: 'Writing the final report...' });
-    const writerOutput = await writer.run(
-      primaryVideo,
-      extractorOutput,
-      sourceOutput.topic_research,
-      synthesizerOutput,
-      criticOutput,
-      currentJob.length_type,
-    );
 
-    let fullReportText = '';
-    for await (const chunk of writer.streamReport(writerOutput.report_text)) {
-      fullReportText += chunk;
+    const { synthesisArtifact, criticArtifact, reportArtifact, report } = await renderReportStage(
+      context,
+      deps,
+      primaryVideo,
+      topicMapArtifact.content,
+      sourceSelectionArtifact,
+    );
+    context.artifacts.synthesis_artifact_id = synthesisArtifact.id;
+    context.artifacts.critic_artifact_id = criticArtifact.id;
+    context.artifacts.report_artifact_id = reportArtifact.id;
+
+    await deps.repositories.researchPacks.save({
+      ...researchPack,
+      synthesis_artifact_id: synthesisArtifact.id,
+      critic_artifact_id: criticArtifact.id,
+      created_at: researchPackCreatedAt ?? researchPack.created_at,
+      updated_at: new Date().toISOString(),
+    });
+
+    const writer = new WriterAgent(deps.llm);
+    for await (const chunk of writer.streamReport(reportArtifact.content.report_text)) {
       yield await emit({ stage: 'token', text: chunk });
     }
 
-    context.artifacts.report_artifact_id = await saveArtifact(
-      'report_markdown',
-      {
-        title: writerOutput.title,
-        report_text: fullReportText,
-        thinking_text: writerOutput.thinking_text,
-      },
-      context.prompt_versions.find((item) => item.key === 'writer'),
-    );
-
-    const researchPack: ResearchPack = {
-      id: context.research_pack_id,
-      job_id: context.job_id,
-      canonical_video_id: context.canonical_video_id,
-      youtube_url: context.request.youtube_url,
-      length_type: context.request.length_type,
-      prompt_bundle_id: context.prompt_bundle_id,
-      prompt_versions: context.prompt_versions,
-      primary_video: {
-        video_id: primaryVideo.video_id,
-        title: primaryVideo.title,
-        url: primaryVideo.url,
-        channel: primaryVideo.channel,
-        view_count: primaryVideo.view_count,
-        published_at: primaryVideo.published_at,
-        duration_sec: primaryVideo.duration_sec,
-        description: primaryVideo.description,
-        transcript_word_count: primaryVideo.transcript_word_count,
-      },
-      primary_transcript_artifact_id: context.artifacts.primary_transcript_artifact_id!,
-      supporting_transcript_artifact_ids: context.artifacts.supporting_transcript_artifact_ids,
-      topic_map_artifact_id: context.artifacts.topic_map_artifact_id!,
-      source_selection_artifact_id: context.artifacts.source_selection_artifact_id!,
-      synthesis_artifact_id: context.artifacts.synthesis_artifact_id,
-      critic_artifact_id: context.artifacts.critic_artifact_id,
-      provenance: {
-        transcript_provider: deps.transcriptProvider.provider_name,
-        video_provider: deps.videoProvider.provider_name,
-        llm_model: deps.llm.model_name,
-      },
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    await deps.repositories.researchPacks.save(researchPack);
-
-    const report: Report = {
-      id: context.report_id,
-      job_id: context.job_id,
-      research_pack_id: context.research_pack_id,
-      canonical_video_id: context.canonical_video_id,
-      idempotency_key: context.idempotency_key,
-      prompt_bundle_id: context.prompt_bundle_id,
-      prompt_versions: context.prompt_versions,
-      youtube_url: currentJob.youtube_url,
-      length_type: currentJob.length_type,
-      title: writerOutput.title,
-      report_text: fullReportText,
-      thinking_text: writerOutput.thinking_text,
-      primary_video: researchPack.primary_video,
-      sources: sourceOutput.sources,
-      topics: extractorOutput.top_topics,
-      topic_research: sourceOutput.topic_research,
-      synthesis: synthesizerOutput,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      word_count: fullReportText.split(/\s+/).filter(Boolean).length,
-    };
     const savedReport = await deps.repositories.reports.save(report);
+
+    await buildExportsStage(context);
 
     currentJob = await deps.repositories.jobs.update({
       ...currentJob,
@@ -387,43 +240,4 @@ export async function* runResearchJob(
       text: currentJob.error_message,
     });
   }
-}
-
-async function persistSupportingTranscripts(input: {
-  sourceOutput: SourceAgentOutput;
-  context: PipelineContext;
-  repositories: RepositoryBundle;
-}): Promise<string[]> {
-  const artifactIds: string[] = [];
-
-  for (const source of input.sourceOutput.sources) {
-    const existing =
-      await input.repositories.artifacts.findLatestByCacheKey(
-        getTranscriptArtifactCacheKey(source.video_id),
-      );
-
-    if (existing) {
-      artifactIds.push(existing.id);
-      continue;
-    }
-
-    artifactIds.push(
-      (
-        await input.repositories.artifacts.save({
-          id: createEntityId('artifact'),
-          kind: 'transcript',
-          job_id: input.context.job_id,
-          research_pack_id: input.context.research_pack_id,
-          cache_key: getTranscriptArtifactCacheKey(source.video_id),
-          content: {
-            source,
-          },
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-      ).id,
-    );
-  }
-
-  return artifactIds;
 }

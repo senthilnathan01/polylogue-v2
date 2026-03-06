@@ -1,3 +1,4 @@
+export * from './artifacts';
 export * from './domain';
 export * from './pipeline';
 export * from './prompts';

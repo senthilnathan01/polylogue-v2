@@ -218,6 +218,8 @@ async function mapArtifact<T>(
       ? (row.prompt_version as ArtifactRecord<T>['prompt_version'])
       : undefined,
     cache_key: row.cache_key ? String(row.cache_key) : undefined,
+    metadata: row.metadata ? (row.metadata as ArtifactRecord<T>['metadata']) : undefined,
+    provenance: row.provenance ? (row.provenance as ArtifactRecord<T>['provenance']) : undefined,
     content: await hydrateArtifactContent<T>(client, row),
     storage_backend: row.storage_backend
       ? (row.storage_backend as ArtifactRecord<T>['storage_backend'])
@@ -479,6 +481,8 @@ export function createSupabaseResearchRepositories(client: SupabaseClient): Repo
             research_pack_id: artifact.research_pack_id ?? null,
             prompt_version: artifact.prompt_version ?? null,
             cache_key: artifact.cache_key ?? null,
+            metadata: artifact.metadata ?? null,
+            provenance: artifact.provenance ?? null,
             content_inline: storage.content_inline,
             storage_backend: storage.storage_backend,
             storage_bucket: storage.storage_bucket,

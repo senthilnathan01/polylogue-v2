@@ -2,6 +2,11 @@ import { createEntityId } from '@/packages/core/pipeline';
 import { TranscriptProvider, VideoProvider } from '@/packages/core/providers';
 import { ArtifactRepository } from '@/packages/core/repositories';
 import { TranscriptSegment } from '@/packages/core/domain';
+import {
+  buildTranscriptArtifactCacheKey,
+  hashArtifactContent,
+  hashTranscriptSegments,
+} from '@/packages/core/artifacts';
 
 interface TranscriptArtifactPayload {
   video_id: string;
@@ -21,7 +26,7 @@ function isTranscriptArtifactPayload(value: unknown): value is TranscriptArtifac
 }
 
 export function getTranscriptArtifactCacheKey(videoId: string): string {
-  return `transcript:${videoId}`;
+  return buildTranscriptArtifactCacheKey(videoId);
 }
 
 export class CachedTranscriptProvider implements TranscriptProvider {
@@ -69,6 +74,18 @@ export class CachedTranscriptProvider implements TranscriptProvider {
         id: createEntityId('artifact'),
         kind: 'transcript',
         cache_key: getTranscriptArtifactCacheKey(videoId),
+        metadata: {
+          video_id: videoId,
+          content_hash: hashArtifactContent(segments),
+          transcript_hash: hashTranscriptSegments(segments),
+          transcript_word_count: transcript.split(/\s+/).filter(Boolean).length,
+        },
+        provenance: {
+          stage: 'fetch_primary_transcript',
+          input_signature: getTranscriptArtifactCacheKey(videoId),
+          upstream_artifact_ids: [],
+          transcript_provider: this.inner.provider_name,
+        },
         content: {
           video_id: videoId,
           transcript,

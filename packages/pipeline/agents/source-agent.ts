@@ -2,6 +2,8 @@ import {
   InsightPoint,
   PrimaryVideo,
   SourceAgentOutput,
+  SupportingVideoSelection,
+  SupportingVideoSelectionOutput,
   Topic,
   TopicResearch,
   TranscriptSegment,
@@ -53,16 +55,67 @@ export class SourceAgent extends BaseAgent {
   }
 
   async run(primaryVideo: PrimaryVideo, topics: Topic[]): Promise<SourceAgentOutput> {
-    const sources: VideoSource[] = [];
-    const topicResearch: TopicResearch[] = [];
+    const selections = await this.selectSupportingVideos(primaryVideo, topics);
+    const transcriptMap = new Map<string, TranscriptSegment[]>();
+
+    for (const selection of selections.selections) {
+      if (!selection.source) {
+        continue;
+      }
+
+      const segments = await this.transcriptProvider.getTranscriptSegments(selection.source.video_id);
+      if (segments && segments.length > 0) {
+        transcriptMap.set(selection.source.video_id, segments);
+      }
+    }
+
+    return this.analyzeSelections(primaryVideo, selections, transcriptMap);
+  }
+
+  async selectSupportingVideos(
+    primaryVideo: PrimaryVideo,
+    topics: Topic[],
+  ): Promise<SupportingVideoSelectionOutput> {
     const usedVideoIds = new Set<string>([primaryVideo.video_id]);
+    const selections: SupportingVideoSelection[] = [];
 
     for (const topic of topics) {
       const selection = await this.selectSupportingVideo(topic, usedVideoIds);
 
       if (!selection) {
-        topicResearch.push({
+        selections.push({
           topic,
+          source: null,
+        });
+        continue;
+      }
+
+      usedVideoIds.add(selection.video.video_id);
+      selections.push({
+        topic,
+        source: {
+          ...selection.video,
+          topic_name: topic.name,
+          selection_reason: `Selected as the strongest transcript-backed result for "${topic.name}".`,
+        },
+      });
+    }
+
+    return { selections };
+  }
+
+  async analyzeSelections(
+    primaryVideo: PrimaryVideo,
+    selections: SupportingVideoSelectionOutput,
+    transcriptSegmentsByVideoId: Map<string, TranscriptSegment[]>,
+  ): Promise<SourceAgentOutput> {
+    const sources: VideoSource[] = [];
+    const topicResearch: TopicResearch[] = [];
+
+    for (const selection of selections.selections) {
+      if (!selection.source) {
+        topicResearch.push({
+          topic: selection.topic,
           source: null,
           connection_summary:
             'No supporting video with an accessible transcript was found for this topic.',
@@ -73,25 +126,22 @@ export class SourceAgent extends BaseAgent {
         continue;
       }
 
-      usedVideoIds.add(selection.video.video_id);
-
+      const sourceSegments = transcriptSegmentsByVideoId.get(selection.source.video_id) ?? [];
       const analysis = await this.analyzeSupportingVideo(
         primaryVideo,
-        topic,
-        selection.video,
-        selection.segments,
+        selection.topic,
+        selection.source,
+        sourceSegments,
       );
 
       const source: VideoSource = {
-        ...selection.video,
-        topic_name: topic.name,
-        selection_reason: `Selected as the strongest transcript-backed result for "${topic.name}".`,
-        transcript_word_count: selection.segments
+        ...selection.source,
+        transcript_word_count: sourceSegments
           .map((segment) => segment.text)
           .join(' ')
           .split(/\s+/)
           .filter(Boolean).length,
-        transcript_excerpt: buildTranscriptExcerpt(selection.segments, topic.keywords, 1800),
+        transcript_excerpt: buildTranscriptExcerpt(sourceSegments, selection.topic.keywords, 1800),
         research_notes: analysis.connection_summary,
         takeaways: analysis.support_takeaways,
         nuances: analysis.nuanced_details,
@@ -100,7 +150,7 @@ export class SourceAgent extends BaseAgent {
 
       sources.push(source);
       topicResearch.push({
-        topic,
+        topic: selection.topic,
         source,
         connection_summary: analysis.connection_summary,
         support_takeaways: analysis.support_takeaways,
@@ -146,6 +196,15 @@ export class SourceAgent extends BaseAgent {
     source: VideoSource,
     sourceSegments: TranscriptSegment[],
   ): Promise<NormalizedSourceAnalysis> {
+    if (sourceSegments.length === 0) {
+      return {
+        connection_summary: `This video appears relevant to ${topic.name}, but its transcript could not be reloaded for detailed comparison.`,
+        support_takeaways: [],
+        nuanced_details: [],
+        tensions: [],
+      };
+    }
+
     try {
       const data = await this.llm.callJson<SourceAnalysisResponse>(
         buildSourceAnalysisPrompt({
