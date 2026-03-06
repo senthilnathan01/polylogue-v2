@@ -20,6 +20,7 @@ export type GenerationStage =
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 export type ArtifactKind =
+  | 'transcript'
   | 'primary_transcript'
   | 'supporting_transcript'
   | 'topic_map'
@@ -166,7 +167,12 @@ export interface ArtifactRecord<T = unknown> {
   research_pack_id?: string;
   prompt_version?: PromptVersionReference;
   cache_key?: string;
-  content: T;
+  content: T | null;
+  storage_backend?: 'inline' | 'supabase_storage';
+  storage_bucket?: string;
+  storage_path?: string;
+  content_type?: string;
+  byte_size?: number;
   created_at: string;
   updated_at: string;
 }

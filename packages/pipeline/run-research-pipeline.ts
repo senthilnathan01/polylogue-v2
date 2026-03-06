@@ -16,6 +16,7 @@ import {
 } from '@/packages/core';
 import { RepositoryBundle } from '@/packages/core/repositories';
 import { TranscriptProvider, VideoProvider, LLMProvider } from '@/packages/core/providers';
+import { getTranscriptArtifactCacheKey } from '@/lib/providers/cached-transcript-provider';
 
 import { CriticAgent } from './agents/critic-agent';
 import { ExtractorAgent } from './agents/extractor-agent';
@@ -204,13 +205,21 @@ export async function* runResearchPipeline(
       return;
     }
 
-    context.artifacts.primary_transcript_artifact_id = await saveArtifact(
-      'primary_transcript',
-      {
-        primary_video: primaryVideo,
-      },
-      context.prompt_versions.find((item) => item.key === 'extractor'),
-    );
+    context.artifacts.primary_transcript_artifact_id =
+      (
+        await deps.repositories.artifacts.findLatestByCacheKey(
+          getTranscriptArtifactCacheKey(primaryVideo.video_id),
+        )
+      )?.id ??
+      (await saveArtifact(
+        'transcript',
+        {
+          video_id: primaryVideo.video_id,
+          transcript: primaryVideo.transcript,
+          transcript_segments: primaryVideo.transcript_segments,
+          transcript_word_count: primaryVideo.transcript_word_count,
+        },
+      ));
 
     yield await emit({
       stage: 'transcript_fetched',
@@ -424,15 +433,24 @@ async function persistSupportingTranscripts(input: {
   const artifactIds: string[] = [];
 
   for (const source of input.sourceOutput.sources) {
+    const existing =
+      await input.repositories.artifacts.findLatestByCacheKey(
+        getTranscriptArtifactCacheKey(source.video_id),
+      );
+
+    if (existing) {
+      artifactIds.push(existing.id);
+      continue;
+    }
+
     artifactIds.push(
       (
         await input.repositories.artifacts.save({
           id: createEntityId('artifact'),
-          kind: 'supporting_transcript',
+          kind: 'transcript',
           job_id: input.context.job_id,
           research_pack_id: input.context.research_pack_id,
-          prompt_version: input.context.prompt_versions.find((item) => item.key === 'source_analysis'),
-          cache_key: `supporting_transcript:${input.context.canonical_video_id}:${source.video_id}`,
+          cache_key: getTranscriptArtifactCacheKey(source.video_id),
           content: {
             source,
           },

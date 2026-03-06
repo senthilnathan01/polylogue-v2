@@ -166,6 +166,15 @@ export function createLocalResearchRepositories(): RepositoryBundle {
         const store = await readLocalStore();
         return store.artifacts.filter((artifact) => artifact.research_pack_id === researchPackId);
       },
+
+      async findLatestByCacheKey<T>(cacheKey: string) {
+        const store = await readLocalStore();
+        return (
+          [...store.artifacts]
+            .sort((a, b) => b.created_at.localeCompare(a.created_at))
+            .find((artifact) => artifact.cache_key === cacheKey) as ArtifactRecord<T> | undefined
+        ) ?? null;
+      },
     },
 
     exports: {

@@ -34,6 +34,7 @@ export interface ArtifactRepository {
   save<T>(artifact: ArtifactRecord<T>): Promise<ArtifactRecord<T>>;
   getById<T>(id: string): Promise<ArtifactRecord<T> | null>;
   listByResearchPackId(researchPackId: string): Promise<ArtifactRecord[]>;
+  findLatestByCacheKey<T>(cacheKey: string): Promise<ArtifactRecord<T> | null>;
 }
 
 export interface ExportBundleRepository {
