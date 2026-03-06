@@ -1,4 +1,4 @@
-import { updateStore } from './local-store';
+import { getResearchSystem } from '@/lib/research-system';
 
 const DAILY_REPORT_LIMIT = Number(process.env.DAILY_REPORT_LIMIT ?? 25);
 const ALERT_THRESHOLD_PERCENT = Number(process.env.ALERT_THRESHOLD_PERCENT ?? 60);
@@ -13,47 +13,24 @@ export async function checkAndIncrement(): Promise<{ allowed: boolean; message: 
     return { allowed: true, message: 'ok' };
   }
 
+  const usageRepository = getResearchSystem().repositories.usage;
   const today = todayKey();
-  let allowed = true;
-  let countAfterIncrement = 0;
-  let shouldAlert = false;
+  const currentCount = await usageRepository.getDailyCount(today);
 
-  await updateStore((store) => {
-    const currentCount = store.usageByDate[today] ?? 0;
-
-    if (currentCount >= DAILY_REPORT_LIMIT) {
-      allowed = false;
-      countAfterIncrement = currentCount;
-      return store;
-    }
-
-    countAfterIncrement = currentCount + 1;
-    const alertThreshold = Math.max(
-      1,
-      Math.floor((DAILY_REPORT_LIMIT * ALERT_THRESHOLD_PERCENT) / 100),
-    );
-    shouldAlert = countAfterIncrement >= alertThreshold && !store.alertsSentByDate[today];
-
-    return {
-      ...store,
-      usageByDate: {
-        ...store.usageByDate,
-        [today]: countAfterIncrement,
-      },
-      alertsSentByDate: shouldAlert
-        ? {
-            ...store.alertsSentByDate,
-            [today]: true,
-          }
-        : store.alertsSentByDate,
-    };
-  });
-
-  if (!allowed) {
+  if (currentCount >= DAILY_REPORT_LIMIT) {
     return {
       allowed: false,
       message: "Today's report limit has been reached. Try again tomorrow.",
     };
+  }
+
+  const countAfterIncrement = await usageRepository.incrementDailyCount(today);
+  const alertThreshold = Math.max(1, Math.floor((DAILY_REPORT_LIMIT * ALERT_THRESHOLD_PERCENT) / 100));
+  const shouldAlert =
+    countAfterIncrement >= alertThreshold && !(await usageRepository.hasSentAlert(today));
+
+  if (shouldAlert) {
+    await usageRepository.markAlertSent(today);
   }
 
   if (shouldAlert) {

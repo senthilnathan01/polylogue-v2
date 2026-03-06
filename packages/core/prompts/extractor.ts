@@ -1,20 +1,17 @@
-import { BaseAgent } from './base-agent';
-import { ExtractorOutput, PrimaryVideo, Topic } from '../types';
-import { LLMService } from '../services/llm-service';
-import { buildPromptTranscript } from '../services/youtube-service';
+import { PrimaryVideo, PromptVersion } from '../domain';
+import { buildPromptTranscript } from '../transcript-formatting';
 
-interface ExtractorResponse {
-  overall_summary?: string;
-  top_topics?: Array<Partial<Topic>>;
-}
+export const EXTRACTOR_PROMPT_VERSION: PromptVersion = {
+  id: 'prompt.extractor.v1',
+  key: 'extractor',
+  version: '2026-03-07.1',
+  label: 'Primary topic extraction',
+  description: 'Maps five to six central topics from the primary transcript.',
+  created_at: '2026-03-07',
+};
 
-export class ExtractorAgent extends BaseAgent {
-  constructor(llm: LLMService) {
-    super(llm);
-  }
-
-  async run(primaryVideo: PrimaryVideo): Promise<ExtractorOutput> {
-    const prompt = `
+export function buildExtractorPrompt(primaryVideo: PrimaryVideo): string {
+  return `
       You are analyzing a long-form YouTube video so a research report can be built from it.
 
       Primary video:
@@ -53,28 +50,4 @@ export class ExtractorAgent extends BaseAgent {
       - Rank 1 must be the most central topic.
       - Keep keywords short and concrete.
     `;
-
-    const data = await this.llm.callJson<ExtractorResponse>(prompt);
-    const topics = (data.top_topics ?? [])
-      .slice(0, 6)
-      .map((topic, index) => ({
-        name: topic.name?.trim() || `Topic ${index + 1}`,
-        summary: topic.summary?.trim() || '',
-        importance: topic.importance?.trim() || '',
-        search_query: topic.search_query?.trim() || topic.name?.trim() || `Topic ${index + 1}`,
-        keywords:
-          topic.keywords?.filter((keyword): keyword is string => Boolean(keyword?.trim())) ?? [],
-        rank: Number(topic.rank ?? index + 1),
-      }))
-      .sort((a, b) => a.rank - b.rank);
-
-    if (topics.length < 5) {
-      throw new Error('Extractor returned fewer than 5 major topics.');
-    }
-
-    return {
-      overall_summary: data.overall_summary?.trim() || '',
-      top_topics: topics,
-    };
-  }
 }

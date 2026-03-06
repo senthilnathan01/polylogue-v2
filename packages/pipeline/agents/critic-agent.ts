@@ -1,6 +1,8 @@
+import { CriticOutput, PrimaryVideo, SynthesizerOutput, TopicResearch } from '@/packages/core/domain';
+import { buildCriticPrompt } from '@/packages/core/prompts/critic';
+import { LLMProvider } from '@/packages/core/providers';
+
 import { BaseAgent } from './base-agent';
-import { CriticOutput, PrimaryVideo, SynthesizerOutput, TopicResearch } from '../types';
-import { LLMService } from '../services/llm-service';
 
 interface CriticResponse {
   missing_angles?: string[];
@@ -11,7 +13,7 @@ interface CriticResponse {
 }
 
 export class CriticAgent extends BaseAgent {
-  constructor(llm: LLMService) {
+  constructor(llm: LLMProvider) {
     super(llm);
   }
 
@@ -20,38 +22,14 @@ export class CriticAgent extends BaseAgent {
     topicResearch: TopicResearch[],
     synthesizerOutput: SynthesizerOutput,
   ): Promise<CriticOutput> {
-    const prompt = `
-      Review this report plan before the final draft is written.
-
-      Primary video:
-      ${JSON.stringify({
-        title: primaryVideo.title,
-        channel: primaryVideo.channel,
-        duration_sec: primaryVideo.duration_sec,
-      })}
-
-      Topic research:
-      ${JSON.stringify(topicResearch)}
-
-      Report plan:
-      ${JSON.stringify(synthesizerOutput)}
-
-      Return valid JSON with:
-      {
-        "missing_angles": ["important idea that would be dropped"],
-        "weak_sections": ["section that feels thin or unbalanced"],
-        "nuance_to_preserve": ["caveat or tension that must stay visible"],
-        "revision_goals": ["clear instruction for the writer"],
-        "quality_score": 0
-      }
-
-      Rules:
-      - Focus on behavioral risk, missing nuance, and imbalance.
-      - Prefer concrete revision advice over generic praise.
-    `;
-
     try {
-      const data = await this.llm.callJson<CriticResponse>(prompt);
+      const data = await this.llm.callJson<CriticResponse>(
+        buildCriticPrompt({
+          primaryVideo,
+          topicResearch,
+          synthesizerOutput,
+        }),
+      );
 
       return {
         missing_angles:

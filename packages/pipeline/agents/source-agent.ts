@@ -1,4 +1,3 @@
-import { BaseAgent } from './base-agent';
 import {
   InsightPoint,
   PrimaryVideo,
@@ -7,14 +6,12 @@ import {
   TopicResearch,
   TranscriptSegment,
   VideoSource,
-} from '../types';
-import {
-  buildPromptTranscript,
-  buildTranscriptExcerpt,
-  getTranscriptWithTimestamps,
-  searchRelatedVideos,
-} from '../services/youtube-service';
-import { LLMService } from '../services/llm-service';
+} from '@/packages/core/domain';
+import { buildSourceAnalysisPrompt } from '@/packages/core/prompts/source-analysis';
+import { TranscriptProvider, VideoProvider } from '@/packages/core/providers';
+import { buildTranscriptExcerpt } from '@/packages/core/transcript-formatting';
+
+import { BaseAgent } from './base-agent';
 
 interface SourceAnalysisResponse {
   connection_summary?: string;
@@ -47,7 +44,11 @@ function normalizeInsightPoints(
 }
 
 export class SourceAgent extends BaseAgent {
-  constructor(llm: LLMService) {
+  constructor(
+    llm: BaseAgent['llm'],
+    private readonly videoProvider: VideoProvider,
+    private readonly transcriptProvider: TranscriptProvider,
+  ) {
     super(llm);
   }
 
@@ -73,6 +74,7 @@ export class SourceAgent extends BaseAgent {
       }
 
       usedVideoIds.add(selection.video.video_id);
+
       const analysis = await this.analyzeSupportingVideo(
         primaryVideo,
         topic,
@@ -114,7 +116,7 @@ export class SourceAgent extends BaseAgent {
     topic: Topic,
     usedVideoIds: Set<string>,
   ): Promise<{ video: VideoSource; segments: TranscriptSegment[] } | null> {
-    const candidates = await searchRelatedVideos(topic.search_query, {
+    const candidates = await this.videoProvider.searchRelatedVideos(topic.search_query, {
       maxResults: 6,
     });
 
@@ -127,7 +129,7 @@ export class SourceAgent extends BaseAgent {
         continue;
       }
 
-      const segments = await getTranscriptWithTimestamps(candidate.video_id);
+      const segments = await this.transcriptProvider.getTranscriptSegments(candidate.video_id);
       if (!segments || segments.length < 12) {
         continue;
       }
@@ -144,45 +146,15 @@ export class SourceAgent extends BaseAgent {
     source: VideoSource,
     sourceSegments: TranscriptSegment[],
   ): Promise<NormalizedSourceAnalysis> {
-    const prompt = `
-      Compare how the primary video and the supporting video handle the same topic.
-
-      Topic:
-      ${JSON.stringify(topic)}
-
-      Primary video excerpt:
-      ${buildTranscriptExcerpt(primaryVideo.transcript_segments, topic.keywords, 3500)}
-
-      Supporting video metadata:
-      ${JSON.stringify({
-        title: source.title,
-        channel: source.channel,
-        view_count: source.view_count,
-      })}
-
-      Supporting video transcript:
-      ${buildPromptTranscript(sourceSegments, {
-        chunkSeconds: 180,
-        maxChars: 45000,
-      })}
-
-      Return valid JSON with this shape:
-      {
-        "connection_summary": "how this video supports, extends, or challenges the main one",
-        "support_takeaways": [{"text": "concrete point", "timestamp_sec": 123}],
-        "nuanced_details": [{"text": "specific detail, example, caveat, mechanism, or number", "timestamp_sec": 456}],
-        "tensions": [{"text": "genuine disagreement or limitation if present", "timestamp_sec": 789}]
-      }
-
-      Rules:
-      - Use 3 to 5 support_takeaways.
-      - Use 3 to 5 nuanced_details.
-      - Use 0 to 3 tensions.
-      - Be concrete. Prefer mechanisms, examples, names, numbers, tradeoffs, and caveats.
-    `;
-
     try {
-      const data = await this.llm.callJson<SourceAnalysisResponse>(prompt);
+      const data = await this.llm.callJson<SourceAnalysisResponse>(
+        buildSourceAnalysisPrompt({
+          primaryVideo,
+          topic,
+          source,
+          sourceSegments,
+        }),
+      );
 
       return {
         connection_summary: data.connection_summary?.trim() || '',

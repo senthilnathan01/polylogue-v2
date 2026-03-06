@@ -58,7 +58,7 @@ export default function Home() {
                   Build the report
                 </h2>
                 <p className="text-sm leading-7 text-stone-600">
-                  The current implementation expects `GEMINI_API_KEY`, `SUPADATA_API_KEY`, and `YOUTUBE_DATA_API_KEY`. Report storage is local, so the prototype can run without Supabase.
+                  The current implementation expects `GEMINI_API_KEY`, `SUPADATA_API_KEY`, and `YOUTUBE_DATA_API_KEY`. Persistence currently uses a local JSON repository adapter, so the architecture is repository-driven even before Supabase lands.
                 </p>
               </div>
 

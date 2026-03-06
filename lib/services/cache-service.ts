@@ -1,7 +1,6 @@
-import { randomUUID } from 'node:crypto';
-
+import { ACTIVE_PROMPT_VERSIONS, buildIdempotencyKey, buildPromptBundleId } from '@/packages/core';
+import { getResearchSystem } from '@/lib/research-system';
 import { LengthType, Report } from '../types';
-import { readStore, updateStore } from './local-store';
 
 const DEFAULT_CACHE_HOURS = 24;
 
@@ -14,45 +13,38 @@ export async function getCachedReport(
   url: string,
   lengthType: LengthType,
 ): Promise<Report | null> {
-  const store = await readStore();
-  const newestFirst = [...store.reports].sort(
-    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-  );
+  const system = getResearchSystem();
+  const canonicalVideoId = system.videoProvider.extractVideoId(url);
+
+  if (!canonicalVideoId) {
+    return null;
+  }
+
+  const promptBundleId = buildPromptBundleId(ACTIVE_PROMPT_VERSIONS);
+  const idempotencyKey = buildIdempotencyKey({
+    canonical_video_id: canonicalVideoId,
+    length_type: lengthType,
+    prompt_bundle_id: promptBundleId,
+  });
+
+  const report = await system.repositories.reports.findLatestByIdempotencyKey(idempotencyKey);
+
+  if (!report) {
+    return null;
+  }
+
   const cacheWindowMs = getCacheWindowMs();
   const now = Date.now();
 
-  return (
-    newestFirst.find((report) => {
-      const createdAtMs = new Date(report.created_at).getTime();
-      return (
-        report.youtube_url === url &&
-        report.length_type === lengthType &&
-        now - createdAtMs <= cacheWindowMs
-      );
-    }) ?? null
-  );
+  return now - new Date(report.created_at).getTime() <= cacheWindowMs ? report : null;
 }
 
 export async function saveReport(
-  report: Omit<Report, 'id' | 'created_at' | 'updated_at'>,
+  report: Report,
 ): Promise<Report> {
-  const timestamp = new Date().toISOString();
-  const savedReport: Report = {
-    ...report,
-    id: randomUUID(),
-    created_at: timestamp,
-    updated_at: timestamp,
-  };
-
-  await updateStore((store) => ({
-    ...store,
-    reports: [savedReport, ...store.reports.filter((item) => item.id !== savedReport.id)],
-  }));
-
-  return savedReport;
+  return getResearchSystem().repositories.reports.save(report);
 }
 
 export async function getReportById(id: string): Promise<Report | null> {
-  const store = await readStore();
-  return store.reports.find((report) => report.id === id) ?? null;
+  return getResearchSystem().repositories.reports.getById(id);
 }
