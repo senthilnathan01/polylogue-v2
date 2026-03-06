@@ -34,6 +34,10 @@ function mapJob(row: Record<string, unknown>): Job {
     research_pack_id: String(row.research_pack_id),
     report_id: row.report_id ? String(row.report_id) : undefined,
     error_message: row.error_message ? String(row.error_message) : undefined,
+    worker_id: row.worker_id ? String(row.worker_id) : undefined,
+    started_at: row.started_at ? String(row.started_at) : undefined,
+    finished_at: row.finished_at ? String(row.finished_at) : undefined,
+    last_heartbeat_at: row.last_heartbeat_at ? String(row.last_heartbeat_at) : undefined,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
@@ -287,6 +291,65 @@ export function createSupabaseResearchRepositories(client: SupabaseClient): Repo
 
         if (error) {
           normalizeError(`Failed to fetch job by idempotency key ${idempotencyKey}`, error);
+        }
+
+        return data ? mapJob(data) : null;
+      },
+
+      async claimNextPending(workerId) {
+        const { data: candidate, error: fetchError } = await client
+          .from('jobs')
+          .select('*')
+          .eq('status', 'pending')
+          .order('created_at', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (fetchError) {
+          normalizeError('Failed to fetch pending job for claim', fetchError);
+        }
+
+        if (!candidate) {
+          return null;
+        }
+
+        const timestamp = now();
+        const { data, error } = await client
+          .from('jobs')
+          .update({
+            status: 'running',
+            worker_id: workerId,
+            started_at: candidate.started_at ?? timestamp,
+            last_heartbeat_at: timestamp,
+            updated_at: timestamp,
+          })
+          .eq('id', candidate.id)
+          .eq('status', 'pending')
+          .select('*')
+          .maybeSingle();
+
+        if (error) {
+          normalizeError(`Failed to claim job ${String(candidate.id)}`, error);
+        }
+
+        return data ? mapJob(data) : null;
+      },
+
+      async touchHeartbeat(jobId, workerId) {
+        const timestamp = now();
+        const { data, error } = await client
+          .from('jobs')
+          .update({
+            last_heartbeat_at: timestamp,
+            updated_at: timestamp,
+          })
+          .eq('id', jobId)
+          .eq('worker_id', workerId)
+          .select('*')
+          .maybeSingle();
+
+        if (error) {
+          normalizeError(`Failed to update heartbeat for job ${jobId}`, error);
         }
 
         return data ? mapJob(data) : null;

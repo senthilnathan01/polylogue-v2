@@ -64,6 +64,61 @@ export function createLocalResearchRepositories(): RepositoryBundle {
             .find((job) => job.idempotency_key === idempotencyKey) ?? null
         );
       },
+
+      async claimNextPending(workerId) {
+        let claimedJob: Job | null = null;
+
+        await updateLocalStore((store) => {
+          const nextPendingJob = [...store.jobs]
+            .filter((job) => job.status === 'pending')
+            .sort((a, b) => a.created_at.localeCompare(b.created_at))[0];
+
+          if (!nextPendingJob) {
+            return store;
+          }
+
+          claimedJob = {
+            ...nextPendingJob,
+            status: 'running',
+            worker_id: workerId,
+            started_at: nextPendingJob.started_at ?? now(),
+            last_heartbeat_at: now(),
+            updated_at: now(),
+          };
+
+          return {
+            ...store,
+            jobs: upsertById(store.jobs, claimedJob),
+          };
+        });
+
+        return claimedJob;
+      },
+
+      async touchHeartbeat(jobId, workerId) {
+        let updatedJob: Job | null = null;
+
+        await updateLocalStore((store) => {
+          const currentJob = store.jobs.find((job) => job.id === jobId);
+
+          if (!currentJob || currentJob.worker_id !== workerId) {
+            return store;
+          }
+
+          updatedJob = {
+            ...currentJob,
+            last_heartbeat_at: now(),
+            updated_at: now(),
+          };
+
+          return {
+            ...store,
+            jobs: upsertById(store.jobs, updatedJob),
+          };
+        });
+
+        return updatedJob;
+      },
     },
 
     jobEvents: {

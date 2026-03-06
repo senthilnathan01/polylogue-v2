@@ -236,6 +236,10 @@ export interface Job {
   research_pack_id: string;
   report_id?: string;
   error_message?: string;
+  worker_id?: string;
+  started_at?: string;
+  finished_at?: string;
+  last_heartbeat_at?: string;
   created_at: string;
   updated_at: string;
 }

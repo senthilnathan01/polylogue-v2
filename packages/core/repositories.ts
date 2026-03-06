@@ -12,6 +12,8 @@ export interface JobRepository {
   update(job: Job): Promise<Job>;
   getById(id: string): Promise<Job | null>;
   findLatestByIdempotencyKey(idempotencyKey: string): Promise<Job | null>;
+  claimNextPending(workerId: string): Promise<Job | null>;
+  touchHeartbeat(jobId: string, workerId: string): Promise<Job | null>;
 }
 
 export interface JobEventRepository {

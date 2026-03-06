@@ -12,18 +12,12 @@ const requestSchema = z.object({
   length: z.enum(['short', 'medium', 'long']),
 });
 
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const parsed = requestSchema.safeParse({
-    url: searchParams.get('url'),
-    length: searchParams.get('length'),
-  });
+export async function POST(req: NextRequest) {
+  const body = await req.json().catch(() => null);
+  const parsed = requestSchema.safeParse(body);
 
   if (!parsed.success) {
-    return NextResponse.json(
-      { error: 'Invalid or missing url/length parameters.' },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: 'Invalid or missing url/length parameters.' }, { status: 400 });
   }
 
   try {
@@ -34,9 +28,12 @@ export async function GET(req: NextRequest) {
 
     ensureJobWorkerRunning();
 
-    return NextResponse.redirect(
-      new URL(`/api/jobs/${result.job.id}/stream`, req.url),
-      { status: 307 },
+    return NextResponse.json(
+      {
+        job: result.job,
+        reused: result.reused,
+      },
+      { status: result.reused ? 200 : 202 },
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create job';

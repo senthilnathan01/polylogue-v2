@@ -51,10 +51,9 @@ export function StreamingReport({
   const [isConnecting, setIsConnecting] = useState(true);
 
   useEffect(() => {
-    const eventSource = new EventSource(
-      `/api/generate?url=${encodeURIComponent(url)}&length=${length}`,
-    );
+    let eventSource: EventSource | null = null;
     let finished = false;
+    let disposed = false;
 
     const upsertEvent = (incoming: StreamEvent) => {
       setEvents((previous) => {
@@ -78,14 +77,14 @@ export function StreamingReport({
       if (stage === 'failed') {
         finished = true;
         setError((payload.text as string) || 'An error occurred while generating the report.');
-        eventSource.close();
+        eventSource?.close();
         return;
       }
 
       if (stage === 'done') {
         finished = true;
         setIsDone(true);
-        eventSource.close();
+        eventSource?.close();
         return;
       }
 
@@ -120,31 +119,74 @@ export function StreamingReport({
       'metadata',
       'done',
       'failed',
-    ];
+    ] as const;
 
-    stages.forEach((stage) => {
-      eventSource.addEventListener(stage, (event: MessageEvent) => {
-        try {
-          const payload = JSON.parse(event.data) as Record<string, unknown>;
-          handleEvent(stage, payload);
-        } catch (parseError) {
-          console.error('Error parsing event data:', parseError);
+    const start = async () => {
+      try {
+        const response = await fetch('/api/jobs', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            url,
+            length,
+          }),
+        });
+
+        const payload = (await response.json()) as {
+          error?: string;
+          job?: { id: string };
+        };
+
+        if (!response.ok || !payload.job?.id) {
+          throw new Error(payload.error || 'Failed to create job.');
         }
-      });
-    });
 
-    eventSource.onerror = (streamError) => {
-      console.error('EventSource error:', streamError);
-      if (!finished) {
-        setIsConnecting(false);
-        setError('Connection failed. Please try again.');
-        eventSource.close();
+        if (disposed) {
+          return;
+        }
+
+        eventSource = new EventSource(`/api/jobs/${payload.job.id}/stream`);
+
+        stages.forEach((stage) => {
+          eventSource!.addEventListener(stage, (event: MessageEvent) => {
+            try {
+              const eventPayload = JSON.parse(event.data) as Record<string, unknown>;
+              handleEvent(stage, eventPayload);
+            } catch (parseError) {
+              console.error('Error parsing event data:', parseError);
+            }
+          });
+        });
+
+        eventSource.onopen = () => {
+          setIsConnecting(false);
+          setError(null);
+        };
+
+        eventSource.onerror = (streamError) => {
+          console.error('EventSource error:', streamError);
+          if (!finished) {
+            setIsConnecting(true);
+          }
+        };
+      } catch (setupError) {
+        if (!disposed) {
+          setIsConnecting(false);
+          setError(
+            setupError instanceof Error ? setupError.message : 'Failed to start the job.',
+          );
+        }
       }
     };
 
+    void start();
+
     return () => {
       finished = true;
-      eventSource.close();
+      disposed = true;
+      eventSource?.close();
     };
   }, [url, length]);
 

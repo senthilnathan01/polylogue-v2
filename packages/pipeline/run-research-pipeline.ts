@@ -1,10 +1,6 @@
 import {
-  ACTIVE_PROMPT_VERSIONS,
   ArtifactRecord,
-  buildIdempotencyKey,
-  buildPromptBundleId,
   createEntityId,
-  createPromptVersionReferences,
   Job,
   PipelineContext,
   PrimaryVideo,
@@ -70,50 +66,30 @@ async function buildPrimaryVideo(
 }
 
 function createInitialContext(input: {
-  youtubeUrl: string;
-  lengthType: Report['length_type'];
-  canonicalVideoId: string;
-  llmModel: string;
+  job: Job;
 }): PipelineContext {
-  const promptBundleId = buildPromptBundleId(ACTIVE_PROMPT_VERSIONS);
-
   return {
     request: {
-      youtube_url: input.youtubeUrl,
-      length_type: input.lengthType,
+      youtube_url: input.job.youtube_url,
+      length_type: input.job.length_type,
     },
-    canonical_video_id: input.canonicalVideoId,
-    idempotency_key: buildIdempotencyKey({
-      canonical_video_id: input.canonicalVideoId,
-      length_type: input.lengthType,
-      prompt_bundle_id: promptBundleId,
-    }),
-    prompt_bundle_id: promptBundleId,
-    prompt_versions: createPromptVersionReferences(ACTIVE_PROMPT_VERSIONS, input.llmModel),
-    job_id: createEntityId('job'),
-    research_pack_id: createEntityId('research_pack'),
-    report_id: createEntityId('report'),
+    canonical_video_id: input.job.canonical_video_id,
+    idempotency_key: input.job.idempotency_key,
+    prompt_bundle_id: input.job.prompt_bundle_id,
+    prompt_versions: input.job.prompt_versions,
+    job_id: input.job.id,
+    research_pack_id: input.job.research_pack_id,
+    report_id: input.job.report_id ?? createEntityId('report'),
     artifacts: {
       supporting_transcript_artifact_ids: [],
     },
   };
 }
 
-export async function* runResearchPipeline(
-  youtubeUrl: string,
-  lengthType: Report['length_type'],
+export async function* runResearchJob(
+  job: Job,
   deps: ResearchPipelineDependencies,
 ): AsyncGenerator<StreamEvent> {
-  const canonicalVideoId = deps.videoProvider.extractVideoId(youtubeUrl);
-
-  if (!canonicalVideoId) {
-    yield {
-      stage: 'failed',
-      text: 'The YouTube URL did not contain a canonical video ID.',
-    };
-    return;
-  }
-
   const extractor = new ExtractorAgent(deps.llm);
   const sourceAgent = new SourceAgent(deps.llm, deps.videoProvider, deps.transcriptProvider);
   const synthesizer = new SynthesizerAgent(deps.llm);
@@ -121,33 +97,17 @@ export async function* runResearchPipeline(
   const writer = new WriterAgent(deps.llm);
 
   const context = createInitialContext({
-    youtubeUrl,
-    lengthType,
-    canonicalVideoId,
-    llmModel: deps.llm.model_name,
+    job,
   });
-
-  let job: Job = await deps.repositories.jobs.create({
-    id: context.job_id,
-    youtube_url: context.request.youtube_url,
-    canonical_video_id: context.canonical_video_id,
-    length_type: context.request.length_type,
-    status: 'running',
-    idempotency_key: context.idempotency_key,
-    prompt_bundle_id: context.prompt_bundle_id,
-    prompt_versions: context.prompt_versions,
-    research_pack_id: context.research_pack_id,
-    report_id: context.report_id,
-    error_message: undefined,
-  });
-
-  let eventSequence = 0;
+  let currentJob = job;
+  const existingEvents = await deps.repositories.jobEvents.listByJobId(job.id);
+  let eventSequence = existingEvents[existingEvents.length - 1]?.sequence ?? 0;
 
   const emit = async (event: StreamEvent) => {
     eventSequence += 1;
     await deps.repositories.jobEvents.append({
       id: createEntityId('job_event'),
-      job_id: job.id,
+      job_id: currentJob.id,
       sequence: eventSequence,
       stage: event.stage,
       text: event.text,
@@ -185,22 +145,23 @@ export async function* runResearchPipeline(
     });
 
     const primaryVideo = await buildPrimaryVideo(
-      youtubeUrl,
+      currentJob.youtube_url,
       deps.videoProvider,
       deps.transcriptProvider,
     );
 
     if (!primaryVideo) {
-      job = await deps.repositories.jobs.update({
-        ...job,
+      currentJob = await deps.repositories.jobs.update({
+        ...currentJob,
         status: 'failed',
         error_message:
           'Could not fetch a transcript for that YouTube video. Try another URL with available captions.',
+        finished_at: new Date().toISOString(),
       });
 
       yield await emit({
         stage: 'failed',
-        text: job.error_message,
+        text: currentJob.error_message,
       });
       return;
     }
@@ -280,7 +241,7 @@ export async function* runResearchPipeline(
       primaryVideo,
       extractorOutput,
       sourceOutput.topic_research,
-      lengthType,
+      currentJob.length_type,
     );
     context.artifacts.synthesis_artifact_id = await saveArtifact<SynthesizerOutput>(
       'synthesis_plan',
@@ -310,7 +271,7 @@ export async function* runResearchPipeline(
       sourceOutput.topic_research,
       synthesizerOutput,
       criticOutput,
-      lengthType,
+      currentJob.length_type,
     );
 
     let fullReportText = '';
@@ -372,8 +333,8 @@ export async function* runResearchPipeline(
       idempotency_key: context.idempotency_key,
       prompt_bundle_id: context.prompt_bundle_id,
       prompt_versions: context.prompt_versions,
-      youtube_url: youtubeUrl,
-      length_type: lengthType,
+      youtube_url: currentJob.youtube_url,
+      length_type: currentJob.length_type,
       title: writerOutput.title,
       report_text: fullReportText,
       thinking_text: writerOutput.thinking_text,
@@ -388,10 +349,12 @@ export async function* runResearchPipeline(
     };
     const savedReport = await deps.repositories.reports.save(report);
 
-    job = await deps.repositories.jobs.update({
-      ...job,
+    currentJob = await deps.repositories.jobs.update({
+      ...currentJob,
       status: 'completed',
       report_id: savedReport.id,
+      finished_at: new Date().toISOString(),
+      last_heartbeat_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
 
@@ -411,16 +374,17 @@ export async function* runResearchPipeline(
 
     yield await emit({ stage: 'done' });
   } catch (error) {
-    job = await deps.repositories.jobs.update({
-      ...job,
+    currentJob = await deps.repositories.jobs.update({
+      ...currentJob,
       status: 'failed',
       error_message: error instanceof Error ? error.message : 'Internal server error',
+      finished_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
 
     yield await emit({
       stage: 'failed',
-      text: job.error_message,
+      text: currentJob.error_message,
     });
   }
 }
