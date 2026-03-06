@@ -7,5 +7,5 @@ export abstract class BaseAgent {
     this.llm = llm;
   }
 
-  abstract run(...args: any[]): Promise<any>;
+  abstract run(...args: unknown[]): Promise<unknown>;
 }

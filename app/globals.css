@@ -1,1 +1,128 @@
 @import "tailwindcss";
+
+:root {
+  --paper: #f7f1e7;
+  --paper-strong: #fffdf9;
+  --ink: #151515;
+  --muted: #6f685f;
+  --line: rgba(89, 73, 57, 0.16);
+  --accent: #b65b2d;
+}
+
+html {
+  background:
+    radial-gradient(circle at top, rgba(236, 209, 176, 0.4), transparent 42%),
+    linear-gradient(180deg, #f8f2e9 0%, #f4efe7 48%, #f7f2ea 100%);
+}
+
+body {
+  min-height: 100vh;
+  color: var(--ink);
+  background: transparent;
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+}
+
+.font-display {
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+}
+
+.report-markdown {
+  color: var(--ink);
+  font-size: 1.02rem;
+  line-height: 1.9;
+}
+
+.report-markdown > :first-child {
+  margin-top: 0;
+}
+
+.report-markdown h1,
+.report-markdown h2,
+.report-markdown h3,
+.report-markdown h4 {
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  color: #121212;
+  line-height: 1.1;
+  margin-top: 2rem;
+  margin-bottom: 0.9rem;
+}
+
+.report-markdown h1 {
+  font-size: clamp(2.3rem, 4vw, 3.6rem);
+}
+
+.report-markdown h2 {
+  font-size: clamp(1.6rem, 2.4vw, 2.1rem);
+}
+
+.report-markdown h3 {
+  font-size: clamp(1.2rem, 2vw, 1.45rem);
+}
+
+.report-markdown p,
+.report-markdown ul,
+.report-markdown ol,
+.report-markdown blockquote {
+  margin: 1rem 0;
+}
+
+.report-markdown ul,
+.report-markdown ol {
+  padding-left: 1.5rem;
+}
+
+.report-markdown li + li {
+  margin-top: 0.4rem;
+}
+
+.report-markdown a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+.report-markdown strong {
+  color: #111;
+}
+
+.report-markdown blockquote {
+  border-left: 3px solid rgba(182, 91, 45, 0.35);
+  padding-left: 1rem;
+  color: var(--muted);
+}
+
+::selection {
+  background: rgba(182, 91, 45, 0.18);
+  color: #111;
+}
+
+@media print {
+  html,
+  body {
+    background: white !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .report-markdown {
+    font-size: 11pt;
+    line-height: 1.65;
+  }
+
+  .report-markdown h1 {
+    font-size: 26pt;
+  }
+
+  .report-markdown h2 {
+    font-size: 18pt;
+    break-after: avoid-page;
+  }
+
+  .report-markdown h3 {
+    font-size: 14pt;
+    break-after: avoid-page;
+  }
+}

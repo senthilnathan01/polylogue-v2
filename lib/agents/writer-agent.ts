@@ -1,77 +1,110 @@
 import { BaseAgent } from './base-agent';
-import { WriterOutput, SynthesizerOutput, CriticOutput, Topic, LengthType } from '../types';
+import {
+  CriticOutput,
+  ExtractorOutput,
+  LengthType,
+  PrimaryVideo,
+  SynthesizerOutput,
+  TopicResearch,
+  WriterOutput,
+} from '../types';
 import { LLMService } from '../services/llm-service';
+import { buildPromptTranscript } from '../services/youtube-service';
+
+const LENGTH_GUIDANCE: Record<LengthType, string> = {
+  short: '1800-2400 words',
+  medium: '3000-4200 words',
+  long: '5000-6500 words',
+};
 
 export class WriterAgent extends BaseAgent {
   constructor(llm: LLMService) {
     super(llm);
   }
 
-  async run(synthesizerOutput: SynthesizerOutput, criticOutput: CriticOutput, allTopics: Topic[], lengthType: LengthType): Promise<WriterOutput> {
+  async run(
+    primaryVideo: PrimaryVideo,
+    extractorOutput: ExtractorOutput,
+    topicResearch: TopicResearch[],
+    synthesizerOutput: SynthesizerOutput,
+    criticOutput: CriticOutput,
+    lengthType: LengthType,
+  ): Promise<WriterOutput> {
     const prompt = `
-      Write a comprehensive technical report based on the following analysis.
-      
-      Synthesizer Output:
+      Write a highly detailed report in markdown based on one main YouTube video and several supporting videos.
+
+      Main video metadata:
+      ${JSON.stringify({
+        title: primaryVideo.title,
+        channel: primaryVideo.channel,
+        duration_sec: primaryVideo.duration_sec,
+        transcript_word_count: primaryVideo.transcript_word_count,
+      })}
+
+      Main video transcript:
+      ${buildPromptTranscript(primaryVideo.transcript_segments, {
+        chunkSeconds: 180,
+        maxChars: 120000,
+      })}
+
+      Topic map:
+      ${JSON.stringify(extractorOutput)}
+
+      Supporting topic research:
+      ${JSON.stringify(topicResearch)}
+
+      Report plan:
       ${JSON.stringify(synthesizerOutput)}
-      
-      Critic Output:
+
+      Critic notes:
       ${JSON.stringify(criticOutput)}
-      
-      All Topics:
-      ${JSON.stringify(allTopics)}
-      
-      Length: ${lengthType}
-      
-      Style: Flowing narrative prose. Technical, detailed, engaging. Like a Hacker News post or technical Substack.
-      Do NOT use bullet points. Do NOT structure by timeline.
-      Include ALL topics, weaving minor ones naturally.
-      Preserve specific technical details (numbers, names, dates).
-      Inline citations: [Source: "Video Title", timestamp].
-      Flag contradictions: [Note: earlier X stated Y — this appears in tension].
-      
-      Output JSON with:
-      "report_text": The full report text.
-      "thinking_text": A summary of reasoning and what was left unsaid.
+
+      Length target: ${LENGTH_GUIDANCE[lengthType]}.
+
+      Requirements:
+      - The main video is the backbone of the report. Cover its real substance, not just a summary.
+      - Supporting videos should expand, sharpen, or challenge the relevant sections, but must not take over the report.
+      - Preserve specifics: names, mechanisms, examples, tradeoffs, numbers, caveats, and tensions.
+      - Use markdown with an H1 title, H2 section headings, and H3 only when helpful.
+      - Prefer paragraphs. Use lists only when they materially improve clarity.
+      - End with a section on open questions, unresolved tensions, or edge cases.
+      - When drawing from a supporting video, signal it explicitly with the video title and timestamp if one is available in the research notes.
+
+      Return valid JSON:
+      {
+        "title": "report title",
+        "report_text": "# Title\\n\\nFull markdown report...",
+        "thinking_text": "Short markdown note describing what the report emphasized, weak spots, and what still needs manual review."
+      }
     `;
-    
+
     try {
-      const response = await this.llm.call(prompt, "", true);
-      return JSON.parse(response);
-    } catch (error) {
-      console.error("Error writing report:", error);
+      const data = await this.llm.callJson<Partial<WriterOutput>>(prompt);
+
       return {
-        report_text: "Error generating report.",
-        thinking_text: "Error generating thinking text.",
+        title: data.title?.trim() || synthesizerOutput.report_title,
+        report_text:
+          data.report_text?.trim() ||
+          `# ${synthesizerOutput.report_title}\n\nReport generation returned empty output.`,
+        thinking_text: data.thinking_text?.trim() || '',
+      };
+    } catch (error) {
+      console.error('Error writing report:', error);
+
+      return {
+        title: synthesizerOutput.report_title || primaryVideo.title,
+        report_text: `# ${synthesizerOutput.report_title || primaryVideo.title}\n\nThe report generator failed before a final draft could be produced.`,
+        thinking_text:
+          'The final writing step failed. Review the source notes and rerun the generation.',
       };
     }
   }
 
-  async *streamReport(synthesizerOutput: SynthesizerOutput, criticOutput: CriticOutput, allTopics: Topic[], lengthType: LengthType): AsyncGenerator<string> {
-    const prompt = `
-      Write a comprehensive technical report based on the following analysis.
-      
-      Synthesizer Output:
-      ${JSON.stringify(synthesizerOutput)}
-      
-      Critic Output:
-      ${JSON.stringify(criticOutput)}
-      
-      All Topics:
-      ${JSON.stringify(allTopics)}
-      
-      Length: ${lengthType}
-      
-      Style: Flowing narrative prose. Technical, detailed, engaging. Like a Hacker News post or technical Substack.
-      Do NOT use bullet points. Do NOT structure by timeline.
-      Include ALL topics, weaving minor ones naturally.
-      Preserve specific technical details (numbers, names, dates).
-      Inline citations: [Source: "Video Title", timestamp].
-      Flag contradictions: [Note: earlier X stated Y — this appears in tension].
-      
-      Start writing the report immediately.
-    `;
-    
-    for await (const chunk of this.llm.stream(prompt)) {
+  async *streamReport(reportText: string): AsyncGenerator<string> {
+    const paragraphs = reportText.split(/\n{2,}/).filter(Boolean);
+
+    for (const paragraph of paragraphs) {
+      const chunk = paragraph.endsWith('\n') ? paragraph : `${paragraph}\n\n`;
       yield chunk;
     }
   }

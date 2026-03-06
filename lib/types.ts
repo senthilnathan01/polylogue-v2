@@ -1,35 +1,39 @@
 export type LengthType = 'short' | 'medium' | 'long';
 
-export interface Report {
-  id: string;
-  youtube_url: string;
-  length_type: LengthType;
-  report_text: string | null;
-  thinking_text: string | null;
-  sources: VideoSource[] | null;
-  topics: Topic[] | null;
-  created_at: string;
-  vote_up: number;
-  vote_down: number;
+export type GenerationStage =
+  | 'validating_input'
+  | 'transcript_fetched'
+  | 'extracting_topics'
+  | 'topics_found'
+  | 'fetching_sources'
+  | 'sources_found'
+  | 'synthesizing'
+  | 'critiquing'
+  | 'generating_report'
+  | 'token'
+  | 'metadata'
+  | 'done'
+  | 'failed';
+
+export interface TranscriptSegment {
+  text: string;
+  start: number;
+  duration: number;
+  end: number;
 }
 
-export interface Claim {
-  id?: string;
-  report_id?: string;
+export interface InsightPoint {
   text: string;
-  claim_type: 'factual' | 'opinion' | 'prediction' | 'anecdotal';
-  confidence_score: number;
-  expert_alignment_score?: number;
-  primary_timestamp_sec: number;
-  source_urls: string[];
-  source_timestamps: number[];
-  is_contradiction: boolean;
-  contradiction_note?: string;
+  timestamp_sec?: number;
 }
 
 export interface Topic {
   name: string;
-  depth_score: number; // 0-100
+  summary: string;
+  importance: string;
+  search_query: string;
+  keywords: string[];
+  rank: number;
 }
 
 export interface VideoSource {
@@ -38,59 +42,103 @@ export interface VideoSource {
   url: string;
   channel: string;
   view_count: number;
-  passages?: string[];
+  published_at?: string;
+  duration_sec?: number;
+  description?: string;
+  topic_name?: string;
+  selection_reason?: string;
+  transcript_word_count?: number;
+  transcript_excerpt?: string;
+  research_notes?: string;
+  takeaways?: InsightPoint[];
+  nuances?: InsightPoint[];
+  tensions?: InsightPoint[];
+}
+
+export interface PrimaryVideo {
+  video_id: string;
+  title: string;
+  url: string;
+  channel: string;
+  view_count: number;
+  published_at?: string;
+  duration_sec: number;
+  description?: string;
+  transcript: string;
+  transcript_segments: TranscriptSegment[];
+  transcript_word_count: number;
 }
 
 export interface ExtractorOutput {
-  all_topics: Topic[];
-  top_5_topics: Topic[];
-  claims: Claim[];
-  speakers: string[];
-  primary_video_duration_sec: number;
+  overall_summary: string;
+  top_topics: Topic[];
+}
+
+export interface TopicResearch {
+  topic: Topic;
+  source: VideoSource | null;
+  connection_summary: string;
+  support_takeaways: InsightPoint[];
+  nuanced_details: InsightPoint[];
+  tensions: InsightPoint[];
 }
 
 export interface SourceAgentOutput {
   sources: VideoSource[];
+  topic_research: TopicResearch[];
 }
 
-export interface VerifiedClaim extends Claim {
-  verification_notes: string;
-}
-
-export interface Contradiction {
-  claim_text: string;
-  contradiction_text: string;
-  source_url?: string;
-  timestamp_sec?: number;
-}
-
-export interface TopicCoverage {
+export interface SynthesisSection {
+  heading: string;
   topic_name: string;
-  covered: boolean;
+  narrative_goal: string;
+  key_points: string[];
+  supporting_videos: string[];
+  nuance_to_preserve: string[];
 }
 
 export interface SynthesizerOutput {
-  verified_claims: VerifiedClaim[];
-  contradictions: Contradiction[];
-  topics_coverage: TopicCoverage[];
-  thinking_notes: string;
+  report_title: string;
+  executive_angle: string;
+  section_plan: SynthesisSection[];
+  cross_video_patterns: string[];
+  unanswered_questions: string[];
+  writing_brief: string;
 }
 
 export interface CriticOutput {
-  overconfident_claims: string[];
-  missed_claims: string[];
-  missed_contradictions: string[];
-  suppressed_nuance: string[];
-  overall_quality_score: number;
+  missing_angles: string[];
+  weak_sections: string[];
+  nuance_to_preserve: string[];
+  revision_goals: string[];
+  quality_score: number;
 }
 
 export interface WriterOutput {
+  title: string;
   report_text: string;
   thinking_text: string;
 }
 
+export interface Report {
+  id: string;
+  youtube_url: string;
+  length_type: LengthType;
+  title: string;
+  report_text: string;
+  thinking_text: string;
+  primary_video: Omit<PrimaryVideo, 'transcript' | 'transcript_segments'>;
+  topics: Topic[];
+  sources: VideoSource[];
+  topic_research: TopicResearch[];
+  synthesis: SynthesizerOutput;
+  created_at: string;
+  updated_at: string;
+  word_count: number;
+}
+
 export interface StreamEvent {
-  stage?: string;
-  data?: any;
+  stage: GenerationStage;
+  data?: unknown;
   text?: string;
 }

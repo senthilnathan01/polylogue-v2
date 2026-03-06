@@ -1,45 +1,80 @@
 import { BaseAgent } from './base-agent';
-import { ExtractorOutput, Topic, Claim } from '../types';
+import { ExtractorOutput, PrimaryVideo, Topic } from '../types';
 import { LLMService } from '../services/llm-service';
+import { buildPromptTranscript } from '../services/youtube-service';
+
+interface ExtractorResponse {
+  overall_summary?: string;
+  top_topics?: Array<Partial<Topic>>;
+}
 
 export class ExtractorAgent extends BaseAgent {
   constructor(llm: LLMService) {
     super(llm);
   }
 
-  async run(transcript: string, duration: number): Promise<ExtractorOutput> {
+  async run(primaryVideo: PrimaryVideo): Promise<ExtractorOutput> {
     const prompt = `
-      You are an expert podcast analyst. Your task is to extract structured data from the following transcript.
-      
-      Transcript:
-      ${transcript}
+      You are analyzing a long-form YouTube video so a research report can be built from it.
 
-      Extract the following information in JSON format:
-      1. "all_topics": A list of all topics discussed, ranked by depth (0-100). Depth is the percentage of transcript tokens spent on the topic.
-      2. "top_5_topics": The top 5 topics from the list above.
-      3. "claims": A list of specific claims made in the podcast. Each claim should have:
-         - "text": The claim text.
-         - "claim_type": One of "factual", "opinion", "prediction", "anecdotal".
-         - "confidence_score": A number between 0 and 1 indicating confidence in the claim's accuracy based on the context.
-         - "primary_timestamp_sec": The approximate timestamp in seconds where the claim is made.
-      4. "speakers": A list of speaker names identified in the transcript.
-      
-      Output ONLY valid JSON. No markdown, no preamble.
+      Primary video:
+      ${JSON.stringify({
+        title: primaryVideo.title,
+        channel: primaryVideo.channel,
+        duration_sec: primaryVideo.duration_sec,
+        transcript_word_count: primaryVideo.transcript_word_count,
+      })}
+
+      Timestamped transcript:
+      ${buildPromptTranscript(primaryVideo.transcript_segments, {
+        chunkSeconds: 240,
+        maxChars: 120000,
+      })}
+
+      Return valid JSON with this exact shape:
+      {
+        "overall_summary": "2-4 sentence summary of the video",
+        "top_topics": [
+          {
+            "name": "specific topic name",
+            "summary": "what the main video says about the topic",
+            "importance": "why this topic matters inside the video",
+            "search_query": "natural YouTube search query for one supporting video",
+            "keywords": ["keyword 1", "keyword 2", "keyword 3"],
+            "rank": 1
+          }
+        ]
+      }
+
+      Rules:
+      - Return exactly 5 or 6 topics that together cover the real substance of the video.
+      - Topics must be specific enough to search on YouTube.
+      - Do not include intro, outro, sponsor, or generic filler topics.
+      - Rank 1 must be the most central topic.
+      - Keep keywords short and concrete.
     `;
 
-    const response = await this.llm.call(prompt, "", true);
-    try {
-      const data = JSON.parse(response);
-      return {
-        all_topics: data.all_topics,
-        top_5_topics: data.top_5_topics,
-        claims: data.claims,
-        speakers: data.speakers,
-        primary_video_duration_sec: duration,
-      };
-    } catch (error) {
-      console.error("Error parsing extractor output:", error);
-      throw new Error("Failed to parse extractor output");
+    const data = await this.llm.callJson<ExtractorResponse>(prompt);
+    const topics = (data.top_topics ?? [])
+      .slice(0, 6)
+      .map((topic, index) => ({
+        name: topic.name?.trim() || `Topic ${index + 1}`,
+        summary: topic.summary?.trim() || '',
+        importance: topic.importance?.trim() || '',
+        search_query: topic.search_query?.trim() || topic.name?.trim() || `Topic ${index + 1}`,
+        keywords:
+          topic.keywords?.filter((keyword): keyword is string => Boolean(keyword?.trim())) ?? [],
+        rank: Number(topic.rank ?? index + 1),
+      }))
+      .sort((a, b) => a.rank - b.rank);
+
+    if (topics.length < 5) {
+      throw new Error('Extractor returned fewer than 5 major topics.');
     }
+
+    return {
+      overall_summary: data.overall_summary?.trim() || '',
+      top_topics: topics,
+    };
   }
 }

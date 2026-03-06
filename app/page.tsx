@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+
 import { UrlInputForm } from '@/components/UrlInputForm';
 import { StreamingReport } from '@/components/StreamingReport';
 import { LengthType } from '@/lib/types';
@@ -17,58 +18,84 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
-      <div className="max-w-4xl mx-auto px-6 py-12 md:py-20">
-        
+    <main className="min-h-screen px-6 py-10 text-stone-900 md:px-10 md:py-16">
+      <div className="mx-auto max-w-6xl">
         {!isStreaming ? (
-          <div className="flex flex-col items-center text-center space-y-8">
-            <div className="space-y-4">
-              <h1 className="text-4xl md:text-6xl font-extrabold tracking-tight text-slate-900">
-                Podcast<span className="text-indigo-600">FactChecker</span>
-              </h1>
-              <p className="text-lg md:text-xl text-slate-600 max-w-2xl mx-auto leading-relaxed">
-                Turn 2-hour technical podcasts into sharp, fact-checked reports.
-                We analyze every claim, find sources, and spot contradictions.
+          <div className="grid gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:items-start">
+            <section className="rounded-[2.5rem] border border-stone-300/70 bg-[linear-gradient(135deg,rgba(255,255,255,0.95),rgba(250,241,228,0.88))] p-8 shadow-[0_32px_120px_-60px_rgba(20,18,16,0.7)] md:p-12">
+              <p className="text-xs font-semibold uppercase tracking-[0.32em] text-amber-700">
+                Long-form YouTube intelligence
               </p>
-            </div>
+              <h1 className="mt-4 max-w-3xl font-display text-5xl leading-[0.95] tracking-tight text-stone-900 md:text-7xl">
+                Turn one transcript into a full research report.
+              </h1>
+              <p className="mt-6 max-w-2xl text-lg leading-8 text-stone-600 md:text-xl">
+                Paste a YouTube URL and the app pulls the main transcript, extracts five to six major topics, finds one strong supporting YouTube video for each topic, collects those transcripts, and writes a detailed report that stays anchored in the original video.
+              </p>
 
-            <div className="w-full max-w-xl">
-              <UrlInputForm onSubmit={handleStart} />
-            </div>
+              <div className="mt-10 grid gap-4 md:grid-cols-3">
+                <FeatureCard
+                  title="Primary-first writing"
+                  desc="The main video stays central. Supporting videos extend, sharpen, and stress-test its ideas."
+                />
+                <FeatureCard
+                  title="Topic-driven retrieval"
+                  desc="Each major topic gets its own transcript-backed support video instead of generic search results."
+                />
+                <FeatureCard
+                  title="PDF-ready output"
+                  desc="Saved reports are printable with a clean layout, so they can be exported as PDFs directly."
+                />
+              </div>
+            </section>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-left w-full max-w-3xl mt-12">
-              <FeatureCard 
-                icon="⚡" 
-                title="Deep Analysis" 
-                desc="Extracts every topic and claim, not just a summary." 
-              />
-              <FeatureCard 
-                icon="🔍" 
-                title="Source Verification" 
-                desc="Cross-checks claims against 6+ external sources." 
-              />
-              <FeatureCard 
-                icon="📝" 
-                title="Technical Prose" 
-                desc="Writes like a senior engineer, preserving all details." 
-              />
-            </div>
+            <section className="rounded-[2.5rem] border border-stone-300/80 bg-white/88 p-8 shadow-[0_32px_120px_-60px_rgba(20,18,16,0.7)] backdrop-blur md:p-10">
+              <div className="space-y-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.28em] text-stone-500">
+                  Start a run
+                </p>
+                <h2 className="font-display text-3xl text-stone-900 md:text-4xl">
+                  Build the report
+                </h2>
+                <p className="text-sm leading-7 text-stone-600">
+                  The current implementation expects `GEMINI_API_KEY`, `SUPADATA_API_KEY`, and `YOUTUBE_DATA_API_KEY`. Report storage is local, so the prototype can run without Supabase.
+                </p>
+              </div>
+
+              <div className="mt-8">
+                <UrlInputForm onSubmit={handleStart} />
+              </div>
+
+              <div className="mt-10 rounded-[2rem] border border-stone-200 bg-stone-50/80 p-5 text-sm text-stone-600">
+                <p className="font-medium text-stone-800">What the pipeline does</p>
+                <ol className="mt-3 space-y-2">
+                  <li>1. Fetch the main video transcript and map its deepest topics.</li>
+                  <li>2. Retrieve one supporting YouTube transcript per topic.</li>
+                  <li>3. Build a long report that preserves specifics and nuance.</li>
+                </ol>
+              </div>
+            </section>
           </div>
         ) : (
-          <StreamingReport url={url} length={length} onReset={() => setIsStreaming(false)} />
+          <div className="mx-auto max-w-6xl">
+            <StreamingReport
+              key={`${url}-${length}`}
+              url={url}
+              length={length}
+              onReset={() => setIsStreaming(false)}
+            />
+          </div>
         )}
-
       </div>
     </main>
   );
 }
 
-function FeatureCard({ icon, title, desc }: { icon: string; title: string; desc: string }) {
+function FeatureCard({ title, desc }: { title: string; desc: string }) {
   return (
-    <div className="p-6 bg-white rounded-2xl shadow-sm border border-slate-200/60">
-      <div className="text-3xl mb-4">{icon}</div>
-      <h3 className="font-bold text-slate-900 mb-2">{title}</h3>
-      <p className="text-sm text-slate-600 leading-relaxed">{desc}</p>
+    <div className="rounded-[1.6rem] border border-stone-200 bg-white/70 p-5">
+      <h3 className="font-semibold text-stone-900">{title}</h3>
+      <p className="mt-2 text-sm leading-6 text-stone-600">{desc}</p>
     </div>
   );
 }

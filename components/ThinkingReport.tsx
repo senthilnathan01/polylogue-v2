@@ -17,7 +17,7 @@ export function ThinkingReport({ thinking }: { thinking: string }) {
         {isOpen ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
       </button>
       {isOpen && (
-        <div className="p-6 border-t border-slate-200/60 prose prose-slate max-w-none text-sm text-slate-600">
+        <div className="report-markdown p-6 border-t border-slate-200/60 text-sm text-slate-600">
           <ReactMarkdown>{thinking}</ReactMarkdown>
         </div>
       )}

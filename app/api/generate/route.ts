@@ -1,47 +1,69 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { checkAndIncrement } from '@/lib/services/quota-service';
-import { getCachedReport, getReportClaims } from '@/lib/services/cache-service';
-import { runPipeline } from '@/lib/pipeline';
-import { LengthType, Report } from '@/lib/types';
+import { z } from 'zod';
 
-export const runtime = 'nodejs'; // Use Node.js runtime for youtube-transcript
+import { getCachedReport } from '@/lib/services/cache-service';
+import { checkAndIncrement } from '@/lib/services/quota-service';
+import { runPipeline } from '@/lib/pipeline';
+import { Report, StreamEvent } from '@/lib/types';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+const requestSchema = z.object({
+  url: z.string().url(),
+  length: z.enum(['short', 'medium', 'long']),
+});
+
+function encodeEvent(encoder: TextEncoder, event: StreamEvent): Uint8Array {
+  const payload = {
+    ...(event.data && typeof event.data === 'object' ? event.data : {}),
+    ...(event.text ? { text: event.text } : {}),
+  };
+
+  return encoder.encode(`event: ${event.stage}\ndata: ${JSON.stringify(payload)}\n\n`);
+}
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const url = searchParams.get('url');
-  const length = searchParams.get('length') as LengthType;
+  const parsed = requestSchema.safeParse({
+    url: searchParams.get('url'),
+    length: searchParams.get('length'),
+  });
 
-  if (!url || !length) {
-    return NextResponse.json({ error: 'Missing url or length' }, { status: 400 });
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid or missing url/length parameters.' },
+      { status: 400 },
+    );
   }
 
-  // 1. Check Quota
+  const { url, length } = parsed.data;
+  const cachedReport = await getCachedReport(url, length);
+
+  if (cachedReport) {
+    return streamCachedReport(cachedReport);
+  }
+
   const { allowed, message } = await checkAndIncrement();
   if (!allowed) {
     return NextResponse.json({ error: message }, { status: 429 });
   }
 
-  // 2. Check Cache
-  const cachedReport = await getCachedReport(url, length);
-  if (cachedReport) {
-    return streamCachedReport(cachedReport);
-  }
-
-  // 3. Run Pipeline
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
       try {
         for await (const event of runPipeline(url, length)) {
-          let data = event.data;
-          if (event.text) {
-            data = { ...data, text: event.text };
-          }
-          controller.enqueue(encoder.encode(`event: ${event.stage}\ndata: ${JSON.stringify(data)}\n\n`));
+          controller.enqueue(encodeEvent(encoder, event));
         }
       } catch (error) {
         console.error('Pipeline error:', error);
-        controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ text: 'Internal server error' })}\n\n`));
+        controller.enqueue(
+          encodeEvent(encoder, {
+            stage: 'failed',
+            text: error instanceof Error ? error.message : 'Internal server error',
+          }),
+        );
       } finally {
         controller.close();
       }
@@ -52,7 +74,7 @@ export async function GET(req: NextRequest) {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
+      Connection: 'keep-alive',
     },
   });
 }
@@ -61,31 +83,63 @@ function streamCachedReport(report: Report) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
-      // Simulate progress events
-      controller.enqueue(encoder.encode(`event: transcript_fetched\ndata: ${JSON.stringify({ words: 10000 })}\n\n`));
-      controller.enqueue(encoder.encode(`event: topics_found\ndata: ${JSON.stringify({ topics: report.topics?.map(t => t.name) || [] })}\n\n`));
-      controller.enqueue(encoder.encode(`event: sources_found\ndata: ${JSON.stringify({ sources: report.sources?.map(s => ({ title: s.title, url: s.url })) || [] })}\n\n`));
-      
-      // Stream report text token by token (simulated)
-      const text = report.report_text || "";
-      const chunkSize = 50; // Faster simulation
-      for (let i = 0; i < text.length; i += chunkSize) {
-        const chunk = text.slice(i, i + chunkSize);
-        controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ text: chunk })}\n\n`));
-        await new Promise(resolve => setTimeout(resolve, 5)); // Faster simulation
+      const progressEvents: StreamEvent[] = [
+        {
+          stage: 'transcript_fetched',
+          data: {
+            title: report.primary_video.title,
+            words: report.primary_video.transcript_word_count,
+            duration_sec: report.primary_video.duration_sec,
+            channel: report.primary_video.channel,
+          },
+        },
+        {
+          stage: 'topics_found',
+          data: {
+            topics: report.topics,
+          },
+        },
+        {
+          stage: 'sources_found',
+          data: {
+            sources: report.sources,
+            topic_research: report.topic_research,
+          },
+        },
+      ];
+
+      for (const event of progressEvents) {
+        controller.enqueue(encodeEvent(encoder, event));
       }
 
-      // Fetch claims
-      const claims = await getReportClaims(report.id);
+      const chunkSize = 700;
+      for (let index = 0; index < report.report_text.length; index += chunkSize) {
+        const chunk = report.report_text.slice(index, index + chunkSize);
+        controller.enqueue(
+          encodeEvent(encoder, {
+            stage: 'generating_report',
+            text: 'Replaying cached report...',
+          }),
+        );
+        controller.enqueue(encodeEvent(encoder, { stage: 'token', text: chunk }));
+      }
 
-      // Metadata
-      controller.enqueue(encoder.encode(`event: metadata\ndata: ${JSON.stringify({ 
-        claims: claims,
-        sources: report.sources,
-        report_id: report.id
-      })}\n\n`));
-      
-      controller.enqueue(encoder.encode(`event: done\ndata: {}\n\n`));
+      controller.enqueue(
+        encodeEvent(encoder, {
+          stage: 'metadata',
+          data: {
+            report_id: report.id,
+            title: report.title,
+            thinking_text: report.thinking_text,
+            primary_video: report.primary_video,
+            topics: report.topics,
+            sources: report.sources,
+            topic_research: report.topic_research,
+            word_count: report.word_count,
+          },
+        }),
+      );
+      controller.enqueue(encodeEvent(encoder, { stage: 'done', data: {} }));
       controller.close();
     },
   });
@@ -94,7 +148,7 @@ function streamCachedReport(report: Report) {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
+      Connection: 'keep-alive',
     },
   });
 }

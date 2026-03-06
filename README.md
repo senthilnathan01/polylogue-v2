@@ -1,20 +1,52 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Polylogue Research Studio
 
-# Run and deploy your AI Studio app
+Polylogue turns one YouTube video into a transcript-grounded research report.
 
-This contains everything you need to run your app locally.
+The current app flow is:
 
-View your app in AI Studio: https://ai.studio/apps/91a73524-94e0-410d-9660-9be30ee4ccc8
+1. Fetch the transcript for the input YouTube URL.
+2. Extract 5-6 major topics from the main video.
+3. Find one transcript-backed supporting YouTube video for each topic.
+4. Analyze those transcripts against the main transcript.
+5. Generate a long markdown report that keeps the first video primary while using the others to deepen, challenge, and expand the ideas.
+6. Save the result locally and expose a print-friendly report page so it can be exported as PDF.
 
-## Run Locally
+## Requirements
 
-**Prerequisites:**  Node.js
+- Node.js 20+
+- `GEMINI_API_KEY`
+- `SUPADATA_API_KEY`
+- `YOUTUBE_DATA_API_KEY`
 
+Supabase is optional. The prototype now works with a local JSON report store in `.data/report-store.json`.
+
+Transcript retrieval uses Supadata only. There are no local scraping or model-based transcript fallbacks.
+
+## Run locally
 
 1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+   ```bash
+   npm install
+   ```
+2. Create `.env.local` from `.env.example` and fill in the required keys.
+3. Start the app:
+   ```bash
+   npm run dev
+   ```
+4. Open [http://localhost:3000](http://localhost:3000).
+
+## Verification
+
+After installing dependencies, run:
+
+```bash
+npm run typecheck
+npm run lint
+npm run build
+```
+
+## Notes
+
+- Cached reports are reused for a configurable window via `REPORT_CACHE_HOURS`.
+- Daily generation limits are controlled by `DAILY_REPORT_LIMIT`.
+- PDF export is handled through the browser print flow on the saved report page.
